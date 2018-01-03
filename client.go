@@ -72,7 +72,7 @@ func (c *Client) Start() {
 
 			if err != nil {
 				fmt.Println(err)
-				fmt.Printf("Reattempting in %d seconds \n", c.Reattempt)
+				fmt.Printf("Reattempting to connect to %s in %d seconds \n", u.String(), c.Reattempt)
 				time.Sleep(time.Duration(c.Reattempt) * time.Second)
 				continue
 			}
@@ -80,12 +80,12 @@ func (c *Client) Start() {
 			// We check that its still the same runID as when this goroutine was started
 			clientRunID := atomic.LoadUint64(&(c.runID))
 			if clientRunID != runID {
-				fmt.Println("Client has been stopped, not sending events")
+				fmt.Printf("Client on URL %s has been stopped, not sending events \n", u.String())
 				return
 			}
 
 			if len(pr.Events) > 0 {
-				fmt.Println("Got", len(pr.Events), "event(s)")
+				fmt.Println("Got", len(pr.Events), "event(s) from URL", u.String())
 				for _, event := range pr.Events {
 					since = event.Timestamp
 					c.EventsChan <- event.Data
@@ -106,8 +106,9 @@ func (c *Client) Stop() {
 }
 
 func (c Client) fetchEvents(since int64) (PollResponse, error) {
-	fmt.Println("Checking for changes events since", since)
 	u := c.url
+	fmt.Println("Checking for changes events since", since, "on URL", u.String())
+
 	query := u.Query()
 	query.Set("category", c.category)
 	query.Set("since_time", fmt.Sprintf("%d", since))
