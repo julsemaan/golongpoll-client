@@ -2,6 +2,7 @@ package glpclient
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,7 +11,8 @@ import (
 )
 
 const (
-	DEFAULT_TIMEOUT = 30
+	DEFAULT_TIMEOUT   = 30
+	DEFAULT_REATTEMPT = 30
 )
 
 type PollResponse struct {
@@ -28,10 +30,12 @@ type PollEvent struct {
 }
 
 type Client struct {
-	url      url.URL
+	url      *url.URL
 	category string
 	// Timeout controls the timeout in all the requests, can be changed after instantiating the client
-	Timeout int
+	Timeout uint64
+	// Reattempt controls the amount of time the client waits to reconnect to the server after a failure
+	Reattempt uint64
 	// Will get all the events data
 	EventsChan chan json.RawMessage
 	// Flag that tracks the current run ID
@@ -43,11 +47,12 @@ type Client struct {
 // Instantiate a new client to connect to a given URL and send the events into a channel
 // The URL shouldn't contain any GET parameters although its fine if it contains some but category, since_time and timeout will be overriten
 // stubChanData must either be an empty structure of the events data or a map[string]interface{} if the events do not follow a specific structure
-func NewClient(url url.URL, category string) *Client {
+func NewClient(url *url.URL, category string) *Client {
 	return &Client{
 		url:        url,
 		category:   category,
 		Timeout:    DEFAULT_TIMEOUT,
+		Reattempt:  DEFAULT_REATTEMPT,
 		EventsChan: make(chan json.RawMessage),
 		HttpClient: &http.Client{},
 	}
@@ -60,10 +65,17 @@ func (c *Client) Start() {
 	atomic.AddUint64(&(c.runID), 1)
 	currentRunID := atomic.LoadUint64(&(c.runID))
 
-	go func(runID uint64, u url.URL) {
+	go func(runID uint64, u *url.URL) {
 		since := time.Now().Unix() * 1000
 		for {
-			pr := c.fetchEvents(since)
+			pr, err := c.fetchEvents(since)
+
+			if err != nil {
+				fmt.Println(err)
+				fmt.Printf("Reattempting in %d seconds \n", c.Reattempt)
+				time.Sleep(time.Duration(c.Reattempt) * time.Second)
+				continue
+			}
 
 			// We check that its still the same runID as when this goroutine was started
 			clientRunID := atomic.LoadUint64(&(c.runID))
@@ -93,7 +105,7 @@ func (c *Client) Stop() {
 	atomic.AddUint64(&(c.runID), 1)
 }
 
-func (c Client) fetchEvents(since int64) PollResponse {
+func (c Client) fetchEvents(since int64) (PollResponse, error) {
 	fmt.Println("Checking for changes events since", since)
 	u := c.url
 	query := u.Query()
@@ -104,19 +116,19 @@ func (c Client) fetchEvents(since int64) PollResponse {
 
 	resp, err := c.HttpClient.Get(u.String())
 	if err != nil {
-		fmt.Println("Error while connecting to", u, "to observe changes", err)
-		// Wait 30 seconds before retrying
-		time.Sleep(30 * time.Second)
+		msg := fmt.Sprintf("Error while connecting to %s to observe changes. Error was: %s", u, err)
+		return PollResponse{}, errors.New(msg)
 	}
 
 	decoder := json.NewDecoder(resp.Body)
 	defer resp.Body.Close()
 
 	var pr PollResponse
-	decoder.Decode(&pr)
+	err = decoder.Decode(&pr)
 	if err != nil {
-		fmt.Println("Error while decoding poll response", err)
+		fmt.Sprintf("Error while decoding poll response: %s", err)
+		return PollResponse{}, err
 	}
 
-	return pr
+	return pr, nil
 }
